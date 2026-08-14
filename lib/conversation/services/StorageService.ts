@@ -82,5 +82,14 @@ export const StorageService = {
       new Date().toISOString()
     );
     console.log('📝 Transcript saved');
-  }
+  },
+  async clearSession(sessionId: string) {
+    await db.runAsync(
+      `DELETE FROM sessions WHERE session_id = ?`,
+      sessionId
+    );
+    console.log(`🗑️ Session ${sessionId} cleared`);
+  },
 };
+
+// Add this method to StorageService

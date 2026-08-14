@@ -13,7 +13,7 @@ import {
     Text,
     TextInput,
     TouchableOpacity,
-    View
+    View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StateMachine } from '../lib/conversation/engine/StateMachine';
@@ -21,6 +21,7 @@ import { StorageService } from '../lib/conversation/services/StorageService';
 
 const { width } = Dimensions.get('window');
 const ORB_SIZE = width * 0.5;
+const RING_WIDTH = 6;
 
 type Message = {
   id: string;
@@ -30,29 +31,48 @@ type Message = {
 };
 
 export default function App() {
+  // --- State ---
   const [messages, setMessages] = useState<Message[]>([]);
   const [engineState, setEngineState] = useState<string>('IDLE');
   const [isListening, setIsListening] = useState(false);
   const [userInput, setUserInput] = useState('');
   const [isThinking, setIsThinking] = useState(false);
   const [taskTitle, setTaskTitle] = useState('Why Start?');
-  const [showTranscript, setShowTranscript] = useState(false);
+  const [showTranscript, setShowTranscript] = useState(true);
   const [statusText, setStatusText] = useState('Tap to start');
-  const [debugInfo, setDebugInfo] = useState('');
+  const [statusSubtext, setStatusSubtext] = useState('');
 
+  // --- Animation refs ---
+  const rotationAnim = useRef(new Animated.Value(0)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const glowAnim = useRef(new Animated.Value(0)).current;
 
+  const spin = rotationAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '360deg'],
+  });
+
+  // --- Engine refs ---
   const machineRef = useRef<StateMachine | null>(null);
   const listenResolverRef = useRef<((value: string) => void) | null>(null);
   const scrollViewRef = useRef<ScrollView>(null);
+  const isProcessingRef = useRef(false);
 
-  // --- Animation Effects ---
+  // --- Orb Animation ---
   useEffect(() => {
+    const rotate = Animated.loop(
+      Animated.timing(rotationAnim, {
+        toValue: 1,
+        duration: 4000,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      })
+    );
+
     const pulse = Animated.loop(
       Animated.sequence([
         Animated.timing(pulseAnim, {
-          toValue: 1.2,
+          toValue: 1.06,
           duration: 800,
           easing: Easing.inOut(Easing.ease),
           useNativeDriver: true,
@@ -65,6 +85,7 @@ export default function App() {
         }),
       ])
     );
+
     const glow = Animated.loop(
       Animated.sequence([
         Animated.timing(glowAnim, {
@@ -73,66 +94,180 @@ export default function App() {
           useNativeDriver: true,
         }),
         Animated.timing(glowAnim, {
-          toValue: 0,
+          toValue: 0.3,
           duration: 1000,
           useNativeDriver: true,
         }),
       ])
     );
 
-    if (engineState === 'SPEAKING' || engineState === 'LISTENING') {
+    const isActive = engineState === 'SPEAKING' || engineState === 'LISTENING' || engineState === 'PROCESSING';
+    if (isActive) {
+      rotate.start();
       pulse.start();
       glow.start();
     } else {
+      rotate.stop();
       pulse.stop();
       glow.stop();
+      rotationAnim.setValue(0);
       pulseAnim.setValue(1);
       glowAnim.setValue(0);
     }
 
     return () => {
+      rotate.stop();
       pulse.stop();
       glow.stop();
     };
   }, [engineState]);
 
-  // --- Initialization ---
+  // --- Helper: Reset App ---
+  const resetApp = async () => {
+    console.log('🔄 Resetting app...');
+    // Stop any ongoing speech
+    Speech.stop();
+
+    // Clear the session from SQLite
+    await StorageService.clearSession('mission1_quest1');
+    console.log('🗑️ Session cleared');
+
+    // Reset local state
+    setMessages([]);
+    setUserInput('');
+    setEngineState('IDLE');
+    setIsListening(false);
+    setIsThinking(false);
+    setStatusText('Starting fresh...');
+    setStatusSubtext('');
+    listenResolverRef.current = null;
+    isProcessingRef.current = false;
+
+    // Recreate the state machine
+    const machine = new StateMachine();
+    machineRef.current = machine;
+
+    // Re-register callbacks
+    machine.onStateChangeListener((state, data) => {
+      console.log('🔔 Reset machine state:', state);
+      setEngineState(state);
+      switch (state) {
+        case 'PROCESSING':
+          setIsThinking(true);
+          setStatusText('✨ Thinking...');
+          setStatusSubtext('Atlas is crafting your insight');
+          setIsListening(false);
+          break;
+        case 'LISTENING':
+          setIsListening(true);
+          setStatusText('🎤 Your turn');
+          setStatusSubtext('Type your answer or speak');
+          setIsThinking(false);
+          break;
+        case 'SPEAKING':
+          setStatusText('🔊 Atlas is speaking');
+          setStatusSubtext('');
+          setIsListening(false);
+          setIsThinking(false);
+          break;
+        case 'COMPLETE':
+          setStatusText('✅ Task complete!');
+          setStatusSubtext('Moving to next task...');
+          setIsListening(false);
+          setIsThinking(false);
+          break;
+        case 'IDLE':
+        default:
+          setStatusText('👋 Ready');
+          setStatusSubtext('');
+          setIsListening(false);
+          setIsThinking(false);
+          break;
+      }
+    });
+
+    machine.initialize(
+      (text) => {
+        console.log('🗣️ Reset TTS:', text.substring(0, 50));
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now().toString(),
+            sender: 'atlas',
+            text: text,
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+        Speech.speak(text, {
+          language: 'en-US',
+          pitch: 1.0,
+          rate: 0.9,
+        });
+      },
+      async () => {
+        console.log('🎤 Reset listen callback');
+        return new Promise<string>((resolve) => {
+          listenResolverRef.current = resolve;
+        });
+      }
+    );
+
+    // Start the session fresh
+    console.log('🚀 Starting fresh session...');
+    await machine.startOrResume();
+    console.log('✅ Reset complete');
+  };
+
+  // --- Init (no auto‑clear) ---
   useEffect(() => {
     const init = async () => {
       try {
         await StorageService.init();
+        console.log('📦 Storage initialized');
+
         const machine = new StateMachine();
         machineRef.current = machine;
 
         machine.onStateChangeListener((state, data) => {
-          console.log('🔔 State change:', state, data);
+          console.log('🔔 State change:', state);
           setEngineState(state);
-          setDebugInfo(`State: ${state} | Node: ${machineRef.current?.['currentNodeIndex'] || 0}`);
-          
-          if (state === 'PROCESSING') {
-            setIsThinking(true);
-            setStatusText('Thinking...');
-          } else {
-            setIsThinking(false);
-          }
-          if (state === 'LISTENING') {
-            setIsListening(true);
-            setStatusText('Listening...');
-            console.log('🎧 LISTENING - resolver should be set');
-          } else {
-            setIsListening(false);
-          }
-          if (state === 'COMPLETE') {
-            setStatusText('Task complete! 🎉');
-          }
-          if (state === 'IDLE') {
-            setStatusText('Idle');
+          switch (state) {
+            case 'PROCESSING':
+              setIsThinking(true);
+              setStatusText('✨ Thinking...');
+              setStatusSubtext('Atlas is crafting your insight');
+              setIsListening(false);
+              break;
+            case 'LISTENING':
+              setIsListening(true);
+              setStatusText('🎤 Your turn');
+              setStatusSubtext('Type your answer or speak');
+              setIsThinking(false);
+              break;
+            case 'SPEAKING':
+              setStatusText('🔊 Atlas is speaking');
+              setStatusSubtext('');
+              setIsListening(false);
+              setIsThinking(false);
+              break;
+            case 'COMPLETE':
+              setStatusText('✅ Task complete!');
+              setStatusSubtext('Moving to next task...');
+              setIsListening(false);
+              setIsThinking(false);
+              break;
+            case 'IDLE':
+            default:
+              setStatusText('👋 Ready');
+              setStatusSubtext('');
+              setIsListening(false);
+              setIsThinking(false);
+              break;
           }
         });
 
         machine.initialize(
           (text) => {
-            console.log('🗣️ TTS speaking:', text.substring(0, 50) + '...');
             setMessages((prev) => [
               ...prev,
               {
@@ -142,34 +277,25 @@ export default function App() {
                 timestamp: new Date().toISOString(),
               },
             ]);
-            setStatusText('Speaking...');
             Speech.speak(text, {
               language: 'en-US',
               pitch: 1.0,
               rate: 0.9,
-              onDone: () => {
-                console.log('🔊 TTS finished');
-                // Don't change status here - the state machine will handle it
-              },
             });
           },
           async () => {
-            console.log('🎤 onListen called - creating promise');
-            setIsListening(true);
-            setStatusText('Listening...');
             return new Promise<string>((resolve) => {
-              console.log('📌 Storing resolver');
               listenResolverRef.current = resolve;
             });
           }
         );
 
         await machine.startOrResume();
-        setStatusText('Speaking...');
+        console.log('🚀 Session started');
       } catch (error) {
         console.error('Init error:', error);
-        setStatusText('Error initializing');
-        setDebugInfo(String(error));
+        setStatusText('❌ Error');
+        setStatusSubtext(String(error));
       }
     };
 
@@ -180,14 +306,11 @@ export default function App() {
     };
   }, []);
 
-  // --- Handle Send ---
+  // --- Handlers ---
   const handleSendText = async () => {
-    if (!userInput.trim()) return;
-    
+    if (!userInput.trim() || isProcessingRef.current) return;
+
     const transcript = userInput.trim();
-    console.log('✏️ User typed:', transcript);
-    console.log('🔍 Resolver exists?', !!listenResolverRef.current);
-    
     setUserInput('');
 
     setMessages((prev) => [
@@ -200,28 +323,17 @@ export default function App() {
       },
     ]);
 
-    // Check if resolver exists
     if (listenResolverRef.current) {
-      console.log('✅ Resolving promise with transcript');
+      isProcessingRef.current = true;
       listenResolverRef.current(transcript);
       listenResolverRef.current = null;
       setIsListening(false);
+      setTimeout(() => {
+        isProcessingRef.current = false;
+      }, 500);
     } else {
-      console.warn('⚠️ No resolver found! Did the state machine call onListen?');
-      setDebugInfo('⚠️ No resolver - tap "Force Advance"');
-    }
-  };
-
-  // --- Force Advance (Emergency) ---
-  const forceAdvance = () => {
-    console.log('🦺 Force advancing...');
-    if (listenResolverRef.current) {
-      listenResolverRef.current('[FORCED] User tapped skip');
-      listenResolverRef.current = null;
-      setIsListening(false);
-    } else {
-      // Try to manually advance the state machine
-      console.warn('No resolver to advance');
+      console.warn('⚠️ No resolver - not in listening state');
+      setStatusSubtext('⚠️ Tap the orb to continue');
     }
   };
 
@@ -229,6 +341,7 @@ export default function App() {
     setShowTranscript(!showTranscript);
   };
 
+  // --- Orb helpers ---
   const getOrbColor = () => {
     switch (engineState) {
       case 'SPEAKING':
@@ -244,11 +357,36 @@ export default function App() {
     }
   };
 
+  const getStatusLabel = () => {
+    switch (engineState) {
+      case 'IDLE':
+        return 'Ready';
+      case 'SPEAKING':
+        return 'Atlas is speaking';
+      case 'LISTENING':
+        return 'Your turn to speak';
+      case 'PROCESSING':
+        return 'Atlas is thinking';
+      case 'COMPLETE':
+        return 'Task complete!';
+      default:
+        return '';
+    }
+  };
+
+  const getCornerIndicator = () => {
+    if (isListening) return '🎤 Your turn';
+    if (isThinking) return '⏳ Thinking...';
+    if (engineState === 'SPEAKING') return '🔊 Speaking';
+    return '⚡';
+  };
+
+  // --- Render ---
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: '#0a0a0a' }}>
       <StatusBar style="light" />
 
-      {/* Minimal Header */}
+      {/* Header */}
       <View
         style={{
           paddingHorizontal: 20,
@@ -259,16 +397,58 @@ export default function App() {
           justifyContent: 'space-between',
         }}
       >
-        <Text style={{ fontSize: 20, fontWeight: '700', color: '#fff' }}>
-          ⚔️ Atlas
-        </Text>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          {/* Small reset icon (optional) */}
+          <TouchableOpacity
+            onPress={resetApp}
+            style={{
+              marginRight: 12,
+              padding: 6,
+              borderRadius: 20,
+              backgroundColor: '#1a1a1a',
+              borderWidth: 1,
+              borderColor: '#333',
+            }}
+          >
+            <Text style={{ color: '#888', fontSize: 18 }}>⟳</Text>
+          </TouchableOpacity>
+
+          <Text style={{ fontSize: 20, fontWeight: '700', color: '#fff' }}>
+            Urge
+          </Text>
+          <Text style={{ fontSize: 12, color: '#555', marginLeft: 6 }}>
+            with Atlas
+          </Text>
+        </View>
+
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          <View
+            style={{
+              backgroundColor: isListening ? '#1a2a1a' : '#1a1a1a',
+              paddingHorizontal: 10,
+              paddingVertical: 4,
+              borderRadius: 12,
+              borderWidth: isListening ? 1 : 0,
+              borderColor: isListening ? '#00ff88' : 'transparent',
+            }}
+          >
+            <Text
+              style={{
+                fontSize: 11,
+                color: isListening ? '#00ff88' : '#666',
+                fontWeight: isListening ? '600' : '400',
+              }}
+            >
+              {getCornerIndicator()}
+            </Text>
+          </View>
           <View
             style={{
               width: 8,
               height: 8,
               borderRadius: 4,
               backgroundColor: getOrbColor(),
+              opacity: engineState === 'IDLE' ? 0.3 : 1,
             }}
           />
           <Text style={{ fontSize: 11, color: '#666' }}>{taskTitle}</Text>
@@ -286,74 +466,158 @@ export default function App() {
             width: ORB_SIZE,
             height: ORB_SIZE,
             borderRadius: ORB_SIZE / 2,
-            backgroundColor: getOrbColor(),
             alignItems: 'center',
             justifyContent: 'center',
-            shadowColor: getOrbColor(),
-            shadowOffset: { width: 0, height: 0 },
-            shadowOpacity: glowAnim.interpolate({
-              inputRange: [0, 1],
-              outputRange: [0.3, 0.9],
-            }),
-            shadowRadius: 30,
-            elevation: 10,
           }}
         >
           <Animated.View
             style={{
+              position: 'absolute',
+              width: ORB_SIZE * 1.3,
+              height: ORB_SIZE * 1.3,
+              borderRadius: ORB_SIZE * 0.65,
+              backgroundColor: getOrbColor(),
+              opacity: glowAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0.05, 0.15],
+              }),
+              transform: [{ scale: pulseAnim }],
+            }}
+          />
+
+          <View
+            style={{
+              position: 'absolute',
               width: ORB_SIZE,
               height: ORB_SIZE,
               borderRadius: ORB_SIZE / 2,
-              transform: [{ scale: pulseAnim }],
-              backgroundColor: getOrbColor(),
-              opacity: 0.3,
-              position: 'absolute',
+              borderWidth: RING_WIDTH,
+              borderColor: 'rgba(255,255,255,0.06)',
             }}
           />
-          <Text style={{ color: '#fff', fontSize: 14, fontWeight: '600' }}>
-            {engineState === 'IDLE' ? '👋' : 
-             engineState === 'SPEAKING' ? '🔊' : 
-             engineState === 'LISTENING' ? '🎤' : 
-             engineState === 'PROCESSING' ? '⏳' : '✓'}
-          </Text>
+
+          <Animated.View
+            style={{
+              position: 'absolute',
+              width: ORB_SIZE,
+              height: ORB_SIZE,
+              borderRadius: ORB_SIZE / 2,
+              borderWidth: RING_WIDTH,
+              borderColor: getOrbColor(),
+              borderTopColor: 'transparent',
+              borderRightColor: 'transparent',
+              borderBottomColor: 'transparent',
+              transform: [{ rotate: spin }],
+              opacity: engineState === 'IDLE' ? 0.2 : 1,
+            }}
+          />
+
+          <Animated.View
+            style={{
+              width: ORB_SIZE * 0.12,
+              height: ORB_SIZE * 0.12,
+              borderRadius: ORB_SIZE * 0.06,
+              backgroundColor: getOrbColor(),
+              opacity: pulseAnim.interpolate({
+                inputRange: [1, 1.06],
+                outputRange: [0.6, 1],
+              }),
+              transform: [{ scale: pulseAnim }],
+            }}
+          />
         </TouchableOpacity>
 
-        {/* Status Text */}
-        <Text style={{ marginTop: 20, fontSize: 14, color: '#888', textAlign: 'center' }}>
-          {statusText}
+        <Text style={{ marginTop: 40, fontSize: 18, fontWeight: '600', color: '#fff' }}>
+          {getStatusLabel()}
         </Text>
-
-        {/* Debug Info */}
-        <Text style={{ marginTop: 8, fontSize: 10, color: '#444', textAlign: 'center' }}>
-          {debugInfo}
-        </Text>
-
-        {/* Force Advance Button (Debug) */}
-        {isListening && (
-          <TouchableOpacity
-            onPress={forceAdvance}
-            style={{
-              marginTop: 12,
-              backgroundColor: '#ff4444',
-              paddingHorizontal: 16,
-              paddingVertical: 8,
-              borderRadius: 8,
-            }}
-          >
-            <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>
-              ⚠️ Force Advance
-            </Text>
-          </TouchableOpacity>
+        {statusSubtext !== '' && (
+          <Text style={{ marginTop: 6, fontSize: 14, color: '#666' }}>
+            {statusSubtext}
+          </Text>
         )}
 
-        {/* Toggle Transcript */}
-        <TouchableOpacity onPress={toggleTranscript} style={{ marginTop: 16 }}>
-          <Text style={{ color: '#555', fontSize: 12 }}>
-            {showTranscript ? 'Hide transcript' : 'Show transcript'}
+        {isListening && (
+          <View style={{ flexDirection: 'row', marginTop: 12, gap: 4 }}>
+            {[0, 1, 2].map((i) => (
+              <Animated.View
+                key={i}
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: 4,
+                  backgroundColor: '#00ff88',
+                  opacity: pulseAnim.interpolate({
+                    inputRange: [1, 1.06],
+                    outputRange: [0.3, 1],
+                  }),
+                  transform: [
+                    {
+                      scale: pulseAnim.interpolate({
+                        inputRange: [1, 1.06],
+                        outputRange: [0.8, 1.2 + i * 0.1],
+                      }),
+                    },
+                  ],
+                }}
+              />
+            ))}
+          </View>
+        )}
+
+        {isListening && (
+          <Text style={{ marginTop: 16, fontSize: 12, color: '#444' }}>
+            💡 Type below or tap the orb for options
+          </Text>
+        )}
+
+        {/* Media framing placeholder */}
+        <TouchableOpacity
+          style={{
+            marginTop: 20,
+            backgroundColor: '#1a1a1a',
+            paddingHorizontal: 16,
+            paddingVertical: 8,
+            borderRadius: 20,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 8,
+            borderWidth: 1,
+            borderColor: '#333',
+          }}
+          onPress={() => {
+            console.log('🎬 Play framing media');
+            setStatusSubtext('🎬 Playing intro...');
+            setTimeout(() => setStatusSubtext(''), 2000);
+          }}
+        >
+          <Text style={{ color: '#888', fontSize: 12 }}>▶️</Text>
+          <Text style={{ color: '#888', fontSize: 12 }}>Watch intro</Text>
+        </TouchableOpacity>
+
+        {/* ✅ NEW: Start Over button (highly visible) */}
+        <TouchableOpacity
+          onPress={resetApp}
+          style={{
+            marginTop: 16,
+            backgroundColor: '#ff4444',
+            paddingHorizontal: 20,
+            paddingVertical: 10,
+            borderRadius: 24,
+            borderWidth: 1,
+            borderColor: '#ff6666',
+          }}
+        >
+          <Text style={{ color: '#fff', fontSize: 14, fontWeight: '600' }}>
+            🔄 Start Over
           </Text>
         </TouchableOpacity>
 
-        {/* Transcript Panel */}
+        <TouchableOpacity onPress={toggleTranscript} style={{ marginTop: 16 }}>
+          <Text style={{ color: '#555', fontSize: 12 }}>
+            {showTranscript ? '📄 Hide transcript' : '📄 Show transcript'}
+          </Text>
+        </TouchableOpacity>
+
         {showTranscript && (
           <View
             style={{
@@ -362,7 +626,7 @@ export default function App() {
               backgroundColor: '#111',
               borderRadius: 12,
               padding: 12,
-              marginTop: 16,
+              marginTop: 12,
             }}
           >
             <ScrollView
@@ -372,7 +636,7 @@ export default function App() {
             >
               {messages.length === 0 && (
                 <Text style={{ color: '#444', fontSize: 12, textAlign: 'center' }}>
-                  No conversation yet...
+                  Conversation will appear here
                 </Text>
               )}
               {messages.map((msg) => (
@@ -381,11 +645,17 @@ export default function App() {
                   style={{
                     flexDirection: 'row',
                     alignItems: 'flex-start',
-                    marginBottom: 8,
+                    marginBottom: 6,
                     gap: 8,
                   }}
                 >
-                  <Text style={{ color: msg.sender === 'atlas' ? '#0066ff' : '#00ff88', fontWeight: '700' }}>
+                  <Text
+                    style={{
+                      color: msg.sender === 'atlas' ? '#0066ff' : '#00ff88',
+                      fontWeight: '700',
+                      fontSize: 12,
+                    }}
+                  >
                     {msg.sender === 'atlas' ? 'A:' : 'Y:'}
                   </Text>
                   <Text style={{ color: '#ccc', fontSize: 13, flex: 1 }}>
@@ -416,15 +686,23 @@ export default function App() {
             <TextInput
               style={{
                 flex: 1,
-                backgroundColor: '#1a1a1a',
+                backgroundColor: isListening ? '#1a2a1a' : '#1a1a1a',
                 borderRadius: 24,
                 paddingHorizontal: 16,
                 paddingVertical: 12,
                 color: '#fff',
                 fontSize: 16,
                 minHeight: 48,
+                borderWidth: isListening ? 1 : 0,
+                borderColor: isListening ? '#00ff88' : 'transparent',
               }}
-              placeholder="Type your answer..."
+              placeholder={
+                isListening
+                  ? '🎤 Type your answer here...'
+                  : isThinking
+                  ? '⏳ Atlas is thinking...'
+                  : 'Waiting for Atlas...'
+              }
               placeholderTextColor="#666"
               value={userInput}
               onChangeText={setUserInput}
@@ -434,38 +712,36 @@ export default function App() {
             <TouchableOpacity
               onPress={handleSendText}
               style={{
-                backgroundColor: isThinking ? '#333' : '#0066ff',
+                backgroundColor:
+                  isThinking ? '#333' :
+                  isListening ? '#00ff88' :
+                  '#0066ff',
                 borderRadius: 30,
                 padding: 12,
                 alignItems: 'center',
                 justifyContent: 'center',
                 width: 48,
                 height: 48,
+                opacity: !userInput.trim() ? 0.5 : 1,
               }}
               disabled={isThinking || !userInput.trim()}
             >
-              <Text style={{ color: '#fff', fontSize: 20 }}>
+              <Text style={{ color: isListening ? '#000' : '#fff', fontSize: 20, fontWeight: '700' }}>
                 {isListening ? '✓' : '➤'}
               </Text>
             </TouchableOpacity>
           </View>
-          <View style={{ marginTop: 8, alignItems: 'center' }}>
-            <TouchableOpacity
-              style={{
-                backgroundColor: '#1a1a1a',
-                borderRadius: 20,
-                paddingVertical: 6,
-                paddingHorizontal: 16,
-                borderWidth: 1,
-                borderColor: '#333',
-                opacity: 0.6,
-              }}
-              onPress={() => console.log('🎤 Voice input requires dev build')}
-            >
-              <Text style={{ color: '#666', fontSize: 11 }}>
-                🎤 Voice input (dev build)
-              </Text>
-            </TouchableOpacity>
+
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 }}>
+            <Text style={{ fontSize: 10, color: '#444' }}>
+              {isListening ? '🟢 Listening for your response' :
+               isThinking ? '🟡 Processing...' :
+               engineState === 'SPEAKING' ? '🔵 Atlas is speaking' :
+               '⚪ Ready'}
+            </Text>
+            <Text style={{ fontSize: 10, color: '#333' }}>
+              {messages.length > 0 ? `${messages.length} messages` : ''}
+            </Text>
           </View>
         </View>
       </KeyboardAvoidingView>
