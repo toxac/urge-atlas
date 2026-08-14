@@ -9,13 +9,13 @@ import {
     Easing,
     KeyboardAvoidingView,
     Platform,
-    SafeAreaView,
     ScrollView,
     Text,
     TextInput,
     TouchableOpacity,
     View
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { StateMachine } from '../lib/conversation/engine/StateMachine';
 import { StorageService } from '../lib/conversation/services/StorageService';
 
@@ -30,7 +30,6 @@ type Message = {
 };
 
 export default function App() {
-  // State
   const [messages, setMessages] = useState<Message[]>([]);
   const [engineState, setEngineState] = useState<string>('IDLE');
   const [isListening, setIsListening] = useState(false);
@@ -39,12 +38,11 @@ export default function App() {
   const [taskTitle, setTaskTitle] = useState('Why Start?');
   const [showTranscript, setShowTranscript] = useState(false);
   const [statusText, setStatusText] = useState('Tap to start');
+  const [debugInfo, setDebugInfo] = useState('');
 
-  // Animation
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const glowAnim = useRef(new Animated.Value(0)).current;
 
-  // Refs
   const machineRef = useRef<StateMachine | null>(null);
   const listenResolverRef = useRef<((value: string) => void) | null>(null);
   const scrollViewRef = useRef<ScrollView>(null);
@@ -107,7 +105,10 @@ export default function App() {
         machineRef.current = machine;
 
         machine.onStateChangeListener((state, data) => {
+          console.log('🔔 State change:', state, data);
           setEngineState(state);
+          setDebugInfo(`State: ${state} | Node: ${machineRef.current?.['currentNodeIndex'] || 0}`);
+          
           if (state === 'PROCESSING') {
             setIsThinking(true);
             setStatusText('Thinking...');
@@ -117,6 +118,7 @@ export default function App() {
           if (state === 'LISTENING') {
             setIsListening(true);
             setStatusText('Listening...');
+            console.log('🎧 LISTENING - resolver should be set');
           } else {
             setIsListening(false);
           }
@@ -129,8 +131,8 @@ export default function App() {
         });
 
         machine.initialize(
-          // Speak callback
           (text) => {
+            console.log('🗣️ TTS speaking:', text.substring(0, 50) + '...');
             setMessages((prev) => [
               ...prev,
               {
@@ -146,15 +148,17 @@ export default function App() {
               pitch: 1.0,
               rate: 0.9,
               onDone: () => {
-                setStatusText('Listening...');
+                console.log('🔊 TTS finished');
+                // Don't change status here - the state machine will handle it
               },
             });
           },
-          // Listen callback
           async () => {
+            console.log('🎤 onListen called - creating promise');
             setIsListening(true);
             setStatusText('Listening...');
             return new Promise<string>((resolve) => {
+              console.log('📌 Storing resolver');
               listenResolverRef.current = resolve;
             });
           }
@@ -165,6 +169,7 @@ export default function App() {
       } catch (error) {
         console.error('Init error:', error);
         setStatusText('Error initializing');
+        setDebugInfo(String(error));
       }
     };
 
@@ -175,10 +180,14 @@ export default function App() {
     };
   }, []);
 
-  // --- Handlers ---
+  // --- Handle Send ---
   const handleSendText = async () => {
     if (!userInput.trim()) return;
+    
     const transcript = userInput.trim();
+    console.log('✏️ User typed:', transcript);
+    console.log('🔍 Resolver exists?', !!listenResolverRef.current);
+    
     setUserInput('');
 
     setMessages((prev) => [
@@ -191,18 +200,35 @@ export default function App() {
       },
     ]);
 
+    // Check if resolver exists
     if (listenResolverRef.current) {
+      console.log('✅ Resolving promise with transcript');
       listenResolverRef.current(transcript);
       listenResolverRef.current = null;
+      setIsListening(false);
+    } else {
+      console.warn('⚠️ No resolver found! Did the state machine call onListen?');
+      setDebugInfo('⚠️ No resolver - tap "Force Advance"');
     }
-    setIsListening(false);
+  };
+
+  // --- Force Advance (Emergency) ---
+  const forceAdvance = () => {
+    console.log('🦺 Force advancing...');
+    if (listenResolverRef.current) {
+      listenResolverRef.current('[FORCED] User tapped skip');
+      listenResolverRef.current = null;
+      setIsListening(false);
+    } else {
+      // Try to manually advance the state machine
+      console.warn('No resolver to advance');
+    }
   };
 
   const toggleTranscript = () => {
     setShowTranscript(!showTranscript);
   };
 
-  // --- Orb Color ---
   const getOrbColor = () => {
     switch (engineState) {
       case 'SPEAKING':
@@ -218,7 +244,6 @@ export default function App() {
     }
   };
 
-  // --- Render ---
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: '#0a0a0a' }}>
       <StatusBar style="light" />
@@ -250,7 +275,7 @@ export default function App() {
         </View>
       </View>
 
-      {/* Main Content - Centered Orb */}
+      {/* Main Content */}
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
         {/* Orb */}
         <TouchableOpacity
@@ -286,7 +311,10 @@ export default function App() {
             }}
           />
           <Text style={{ color: '#fff', fontSize: 14, fontWeight: '600' }}>
-            {engineState === 'IDLE' ? '👋' : engineState === 'SPEAKING' ? '🔊' : engineState === 'LISTENING' ? '🎤' : engineState === 'PROCESSING' ? '⏳' : '✓'}
+            {engineState === 'IDLE' ? '👋' : 
+             engineState === 'SPEAKING' ? '🔊' : 
+             engineState === 'LISTENING' ? '🎤' : 
+             engineState === 'PROCESSING' ? '⏳' : '✓'}
           </Text>
         </TouchableOpacity>
 
@@ -295,22 +323,42 @@ export default function App() {
           {statusText}
         </Text>
 
-        {/* Toggle Transcript Button */}
-        <TouchableOpacity
-          onPress={toggleTranscript}
-          style={{ marginTop: 16 }}
-        >
+        {/* Debug Info */}
+        <Text style={{ marginTop: 8, fontSize: 10, color: '#444', textAlign: 'center' }}>
+          {debugInfo}
+        </Text>
+
+        {/* Force Advance Button (Debug) */}
+        {isListening && (
+          <TouchableOpacity
+            onPress={forceAdvance}
+            style={{
+              marginTop: 12,
+              backgroundColor: '#ff4444',
+              paddingHorizontal: 16,
+              paddingVertical: 8,
+              borderRadius: 8,
+            }}
+          >
+            <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>
+              ⚠️ Force Advance
+            </Text>
+          </TouchableOpacity>
+        )}
+
+        {/* Toggle Transcript */}
+        <TouchableOpacity onPress={toggleTranscript} style={{ marginTop: 16 }}>
           <Text style={{ color: '#555', fontSize: 12 }}>
             {showTranscript ? 'Hide transcript' : 'Show transcript'}
           </Text>
         </TouchableOpacity>
 
-        {/* Transcript Panel (Collapsible) */}
+        {/* Transcript Panel */}
         {showTranscript && (
           <View
             style={{
               width: '100%',
-              maxHeight: 200,
+              maxHeight: 150,
               backgroundColor: '#111',
               borderRadius: 12,
               padding: 12,
@@ -350,7 +398,7 @@ export default function App() {
         )}
       </View>
 
-      {/* Input Area (hidden behind a tap to reveal) */}
+      {/* Input Area */}
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
