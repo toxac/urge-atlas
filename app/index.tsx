@@ -4,7 +4,9 @@ import * as Speech from 'expo-speech';
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect, useRef, useState } from 'react';
 import {
-    ActivityIndicator,
+    Animated,
+    Dimensions,
+    Easing,
     KeyboardAvoidingView,
     Platform,
     SafeAreaView,
@@ -12,10 +14,13 @@ import {
     Text,
     TextInput,
     TouchableOpacity,
-    View,
+    View
 } from 'react-native';
-import { StateMachine } from './conversation/engine/StateMachine';
-import { StorageService } from './conversation/services/StorageService';
+import { StateMachine } from '../lib/conversation/engine/StateMachine';
+import { StorageService } from '../lib/conversation/services/StorageService';
+
+const { width } = Dimensions.get('window');
+const ORB_SIZE = width * 0.5;
 
 type Message = {
   id: string;
@@ -25,58 +30,106 @@ type Message = {
 };
 
 export default function App() {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: 'welcome',
-      sender: 'atlas',
-      text: "I'm Atlas, your startup co-pilot. Let's begin your journey.",
-      timestamp: new Date().toISOString(),
-    },
-  ]);
+  // State
+  const [messages, setMessages] = useState<Message[]>([]);
   const [engineState, setEngineState] = useState<string>('IDLE');
   const [isListening, setIsListening] = useState(false);
   const [userInput, setUserInput] = useState('');
   const [isThinking, setIsThinking] = useState(false);
   const [taskTitle, setTaskTitle] = useState('Why Start?');
+  const [showTranscript, setShowTranscript] = useState(false);
+  const [statusText, setStatusText] = useState('Tap to start');
 
+  // Animation
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const glowAnim = useRef(new Animated.Value(0)).current;
+
+  // Refs
   const machineRef = useRef<StateMachine | null>(null);
   const listenResolverRef = useRef<((value: string) => void) | null>(null);
   const scrollViewRef = useRef<ScrollView>(null);
 
-  // Initialize the app
+  // --- Animation Effects ---
+  useEffect(() => {
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, {
+          toValue: 1.2,
+          duration: 800,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnim, {
+          toValue: 1,
+          duration: 800,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    const glow = Animated.loop(
+      Animated.sequence([
+        Animated.timing(glowAnim, {
+          toValue: 1,
+          duration: 1000,
+          useNativeDriver: true,
+        }),
+        Animated.timing(glowAnim, {
+          toValue: 0,
+          duration: 1000,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+
+    if (engineState === 'SPEAKING' || engineState === 'LISTENING') {
+      pulse.start();
+      glow.start();
+    } else {
+      pulse.stop();
+      glow.stop();
+      pulseAnim.setValue(1);
+      glowAnim.setValue(0);
+    }
+
+    return () => {
+      pulse.stop();
+      glow.stop();
+    };
+  }, [engineState]);
+
+  // --- Initialization ---
   useEffect(() => {
     const init = async () => {
       try {
-        // Initialize SQLite
         await StorageService.init();
-        console.log('📦 Storage initialized');
-
-        // Create state machine
         const machine = new StateMachine();
         machineRef.current = machine;
 
-        // Listen to state changes
         machine.onStateChangeListener((state, data) => {
           setEngineState(state);
           if (state === 'PROCESSING') {
             setIsThinking(true);
+            setStatusText('Thinking...');
           } else {
             setIsThinking(false);
           }
           if (state === 'LISTENING') {
             setIsListening(true);
+            setStatusText('Listening...');
           } else {
             setIsListening(false);
           }
           if (state === 'COMPLETE') {
-            // Task complete!
-            console.log('🎉 Task complete:', data);
+            setStatusText('Task complete! 🎉');
+          }
+          if (state === 'IDLE') {
+            setStatusText('Idle');
           }
         });
 
-        // Initialize with callbacks
         machine.initialize(
-          // Speak callback - handles TTS and UI
+          // Speak callback
           (text) => {
             setMessages((prev) => [
               ...prev,
@@ -87,51 +140,47 @@ export default function App() {
                 timestamp: new Date().toISOString(),
               },
             ]);
-
-            // Speak aloud using TTS
+            setStatusText('Speaking...');
             Speech.speak(text, {
               language: 'en-US',
               pitch: 1.0,
               rate: 0.9,
               onDone: () => {
-                console.log('🔊 TTS finished');
+                setStatusText('Listening...');
               },
             });
           },
-
-          // Listen callback - returns a promise that resolves with transcript
+          // Listen callback
           async () => {
             setIsListening(true);
+            setStatusText('Listening...');
             return new Promise<string>((resolve) => {
               listenResolverRef.current = resolve;
             });
           }
         );
 
-        // Start the conversation
         await machine.startOrResume();
-        console.log('🚀 Session started');
+        setStatusText('Speaking...');
       } catch (error) {
-        console.error('❌ Init error:', error);
+        console.error('Init error:', error);
+        setStatusText('Error initializing');
       }
     };
 
     init();
 
-    // Cleanup TTS on unmount
     return () => {
       Speech.stop();
     };
   }, []);
 
-  // Handle sending text input (Expo Go fallback)
+  // --- Handlers ---
   const handleSendText = async () => {
     if (!userInput.trim()) return;
-
     const transcript = userInput.trim();
     setUserInput('');
 
-    // Add user message to UI
     setMessages((prev) => [
       ...prev,
       {
@@ -142,25 +191,22 @@ export default function App() {
       },
     ]);
 
-    setIsListening(false);
-
-    // Resolve the pending listen promise
     if (listenResolverRef.current) {
       listenResolverRef.current(transcript);
       listenResolverRef.current = null;
     }
+    setIsListening(false);
   };
 
-  // Scroll to bottom when messages change
-  useEffect(() => {
-    setTimeout(() => {
-      scrollViewRef.current?.scrollToEnd({ animated: true });
-    }, 100);
-  }, [messages]);
+  const toggleTranscript = () => {
+    setShowTranscript(!showTranscript);
+  };
 
-  // Get state display color
-  const getStateColor = () => {
+  // --- Orb Color ---
+  const getOrbColor = () => {
     switch (engineState) {
+      case 'SPEAKING':
+        return '#0066ff';
       case 'LISTENING':
         return '#00ff88';
       case 'PROCESSING':
@@ -168,157 +214,143 @@ export default function App() {
       case 'COMPLETE':
         return '#00ccff';
       default:
-        return '#888';
+        return '#444';
     }
   };
 
+  // --- Render ---
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: '#0a0a0a' }}>
       <StatusBar style="light" />
 
-      {/* Header */}
+      {/* Minimal Header */}
       <View
         style={{
           paddingHorizontal: 20,
-          paddingVertical: 16,
-          borderBottomWidth: 1,
-          borderBottomColor: '#1a1a1a',
+          paddingTop: 16,
+          paddingBottom: 12,
           flexDirection: 'row',
           alignItems: 'center',
           justifyContent: 'space-between',
         }}
       >
-        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          <Text style={{ fontSize: 22, fontWeight: '700', color: '#fff' }}>
-            ⚔️ Atlas
-          </Text>
-          <Text
-            style={{
-              marginLeft: 12,
-              fontSize: 12,
-              color: '#666',
-              backgroundColor: '#1a1a1a',
-              paddingHorizontal: 10,
-              paddingVertical: 4,
-              borderRadius: 12,
-            }}
-          >
-            {taskTitle}
-          </Text>
-        </View>
-        <View
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 6,
-            backgroundColor: '#1a1a1a',
-            paddingHorizontal: 10,
-            paddingVertical: 4,
-            borderRadius: 12,
-          }}
-        >
+        <Text style={{ fontSize: 20, fontWeight: '700', color: '#fff' }}>
+          ⚔️ Atlas
+        </Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <View
             style={{
               width: 8,
               height: 8,
               borderRadius: 4,
-              backgroundColor: getStateColor(),
+              backgroundColor: getOrbColor(),
             }}
           />
-          <Text style={{ fontSize: 10, color: '#888', textTransform: 'uppercase' }}>
-            {engineState}
-          </Text>
+          <Text style={{ fontSize: 11, color: '#666' }}>{taskTitle}</Text>
         </View>
       </View>
 
-      {/* Messages */}
-      <ScrollView
-        ref={scrollViewRef}
-        style={{ flex: 1, paddingHorizontal: 20 }}
-        contentContainerStyle={{ paddingVertical: 20 }}
-        showsVerticalScrollIndicator={false}
-      >
-        {messages.map((msg) => (
-          <View
-            key={msg.id}
+      {/* Main Content - Centered Orb */}
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
+        {/* Orb */}
+        <TouchableOpacity
+          activeOpacity={0.9}
+          onPress={toggleTranscript}
+          disabled={engineState === 'PROCESSING'}
+          style={{
+            width: ORB_SIZE,
+            height: ORB_SIZE,
+            borderRadius: ORB_SIZE / 2,
+            backgroundColor: getOrbColor(),
+            alignItems: 'center',
+            justifyContent: 'center',
+            shadowColor: getOrbColor(),
+            shadowOffset: { width: 0, height: 0 },
+            shadowOpacity: glowAnim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0.3, 0.9],
+            }),
+            shadowRadius: 30,
+            elevation: 10,
+          }}
+        >
+          <Animated.View
             style={{
-              alignSelf: msg.sender === 'atlas' ? 'flex-start' : 'flex-end',
-              backgroundColor: msg.sender === 'atlas' ? '#1a1a1a' : '#0066ff',
-              borderRadius: 16,
-              padding: 14,
-              marginBottom: 12,
-              maxWidth: '85%',
+              width: ORB_SIZE,
+              height: ORB_SIZE,
+              borderRadius: ORB_SIZE / 2,
+              transform: [{ scale: pulseAnim }],
+              backgroundColor: getOrbColor(),
+              opacity: 0.3,
+              position: 'absolute',
             }}
-          >
-            <Text
-              style={{
-                color: msg.sender === 'atlas' ? '#e0e0e0' : '#fff',
-                fontSize: 16,
-                lineHeight: 24,
-              }}
-            >
-              {msg.text}
-            </Text>
-            <Text
-              style={{
-                color: msg.sender === 'atlas' ? '#555' : 'rgba(255,255,255,0.6)',
-                fontSize: 10,
-                marginTop: 6,
-              }}
-            >
-              {new Date(msg.timestamp).toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
-            </Text>
-          </View>
-        ))}
+          />
+          <Text style={{ color: '#fff', fontSize: 14, fontWeight: '600' }}>
+            {engineState === 'IDLE' ? '👋' : engineState === 'SPEAKING' ? '🔊' : engineState === 'LISTENING' ? '🎤' : engineState === 'PROCESSING' ? '⏳' : '✓'}
+          </Text>
+        </TouchableOpacity>
 
-        {/* Thinking indicator */}
-        {isThinking && (
+        {/* Status Text */}
+        <Text style={{ marginTop: 20, fontSize: 14, color: '#888', textAlign: 'center' }}>
+          {statusText}
+        </Text>
+
+        {/* Toggle Transcript Button */}
+        <TouchableOpacity
+          onPress={toggleTranscript}
+          style={{ marginTop: 16 }}
+        >
+          <Text style={{ color: '#555', fontSize: 12 }}>
+            {showTranscript ? 'Hide transcript' : 'Show transcript'}
+          </Text>
+        </TouchableOpacity>
+
+        {/* Transcript Panel (Collapsible) */}
+        {showTranscript && (
           <View
             style={{
-              alignSelf: 'flex-start',
-              backgroundColor: '#1a1a1a',
-              borderRadius: 16,
-              padding: 14,
-              marginBottom: 12,
+              width: '100%',
+              maxHeight: 200,
+              backgroundColor: '#111',
+              borderRadius: 12,
+              padding: 12,
+              marginTop: 16,
             }}
           >
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <ActivityIndicator size="small" color="#888" />
-              <Text style={{ color: '#888', fontSize: 14 }}>Atlas is thinking...</Text>
-            </View>
+            <ScrollView
+              ref={scrollViewRef}
+              showsVerticalScrollIndicator={false}
+              onContentSizeChange={() => scrollViewRef.current?.scrollToEnd({ animated: true })}
+            >
+              {messages.length === 0 && (
+                <Text style={{ color: '#444', fontSize: 12, textAlign: 'center' }}>
+                  No conversation yet...
+                </Text>
+              )}
+              {messages.map((msg) => (
+                <View
+                  key={msg.id}
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'flex-start',
+                    marginBottom: 8,
+                    gap: 8,
+                  }}
+                >
+                  <Text style={{ color: msg.sender === 'atlas' ? '#0066ff' : '#00ff88', fontWeight: '700' }}>
+                    {msg.sender === 'atlas' ? 'A:' : 'Y:'}
+                  </Text>
+                  <Text style={{ color: '#ccc', fontSize: 13, flex: 1 }}>
+                    {msg.text}
+                  </Text>
+                </View>
+              ))}
+            </ScrollView>
           </View>
         )}
+      </View>
 
-        {/* Listening indicator */}
-        {isListening && (
-          <View
-            style={{
-              alignSelf: 'flex-end',
-              backgroundColor: '#0044cc',
-              borderRadius: 16,
-              padding: 14,
-              marginBottom: 12,
-            }}
-          >
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <View
-                style={{
-                  width: 10,
-                  height: 10,
-                  borderRadius: 5,
-                  backgroundColor: '#00ff88',
-                }}
-              />
-              <Text style={{ color: '#fff', fontSize: 14 }}>Listening...</Text>
-            </View>
-          </View>
-        )}
-      </ScrollView>
-
-      {/* Input Area */}
+      {/* Input Area (hidden behind a tap to reveal) */}
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
@@ -344,51 +376,46 @@ export default function App() {
                 fontSize: 16,
                 minHeight: 48,
               }}
-              placeholder="Type your answer (Expo Go fallback)..."
+              placeholder="Type your answer..."
               placeholderTextColor="#666"
               value={userInput}
               onChangeText={setUserInput}
               onSubmitEditing={handleSendText}
-              editable={!isThinking && !isListening}
-              multiline
-              numberOfLines={1}
+              editable={!isThinking}
             />
             <TouchableOpacity
               onPress={handleSendText}
               style={{
-                backgroundColor: isThinking || isListening ? '#333' : '#0066ff',
+                backgroundColor: isThinking ? '#333' : '#0066ff',
                 borderRadius: 30,
                 padding: 12,
                 alignItems: 'center',
                 justifyContent: 'center',
                 width: 48,
                 height: 48,
-                opacity: isThinking || isListening ? 0.5 : 1,
               }}
-              disabled={isThinking || isListening || !userInput.trim()}
+              disabled={isThinking || !userInput.trim()}
             >
-              <Text style={{ color: '#fff', fontSize: 20 }}>➤</Text>
+              <Text style={{ color: '#fff', fontSize: 20 }}>
+                {isListening ? '✓' : '➤'}
+              </Text>
             </TouchableOpacity>
           </View>
-
-          {/* Voice button placeholder */}
           <View style={{ marginTop: 8, alignItems: 'center' }}>
             <TouchableOpacity
               style={{
                 backgroundColor: '#1a1a1a',
                 borderRadius: 20,
-                paddingVertical: 8,
+                paddingVertical: 6,
                 paddingHorizontal: 16,
                 borderWidth: 1,
                 borderColor: '#333',
                 opacity: 0.6,
               }}
-              onPress={() => {
-                console.log('🎤 Voice recording not available in Expo Go');
-              }}
+              onPress={() => console.log('🎤 Voice input requires dev build')}
             >
-              <Text style={{ color: '#666', fontSize: 12 }}>
-                🎤 Voice input requires development build
+              <Text style={{ color: '#666', fontSize: 11 }}>
+                🎤 Voice input (dev build)
               </Text>
             </TouchableOpacity>
           </View>
