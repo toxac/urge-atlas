@@ -1,44 +1,40 @@
 import { assign, createMachine, fromPromise } from 'xstate';
-import { QuestSchema, TaskSchema } from '../../../types/playbook';
-import { ConversationMessage, DeepSeekService, TurnAnalysis } from '../services/DeepSeekService';
-import { playbookAdapter } from './PlaybookAdapter';
+import { DeepSeekService, MotivationFormData, MotivationStep, MotivationTurnResult } from '../services/DeepSeekService';
 
-export interface PlaybookContext {
-  taskIndex: number;
-  currentQuest: QuestSchema;
-  currentTask: TaskSchema;
-  history: ConversationMessage[];
+export interface Task1Context {
+  currentStep: MotivationStep;
+  stepIndex: number;
   userInput: string;
   atlasResponse: string;
-  collectedAnswers: Record<string, any>;
-  isTaskComplete: boolean;
+  formData: Partial<MotivationFormData>;
 }
 
-export type PlaybookEvent =
+export type Task1Event =
   | { type: 'START' }
   | { type: 'SPEECH_FINISHED' }
   | { type: 'SUBMIT_INPUT'; text: string }
-  | { type: 'NEXT_TASK' }
   | { type: 'RESET' };
 
-const firstTaskData = playbookAdapter.getTask(0)!;
+const STEP_PROMPTS: Record<MotivationStep, string> = {
+  push: "Let's be totally honest. What is the actual situation or pain you're running away from right now?",
+  pull: "Now, what is the clear vision or future you are running toward?",
+  urgency: "Why today? What makes right now the urgent moment to make this leap?",
+  why_statement: "Lastly, bring it all together. What is your 1-sentence founder manifesto?",
+};
 
-export const adaptiveConversationMachine = createMachine({
-  id: 'quest1Demo',
+export const task1MotivationMachine = createMachine({
+  id: 'task1Motivation',
   initial: 'idle',
   types: {} as {
-    context: PlaybookContext;
-    events: PlaybookEvent;
+    context: Task1Context;
+    events: Task1Event;
   },
   context: {
-    taskIndex: 0,
-    currentQuest: firstTaskData.quest,
-    currentTask: firstTaskData.task,
-    history: [],
+    currentStep: 'push',
+    stepIndex: 0,
     userInput: '',
-    atlasResponse: firstTaskData.task.briefing_text,
-    collectedAnswers: {},
-    isTaskComplete: false,
+    atlasResponse: STEP_PROMPTS.push,
+    formData: {},
   },
   states: {
     idle: {
@@ -55,10 +51,6 @@ export const adaptiveConversationMachine = createMachine({
           target: 'processingTurn',
           actions: assign({
             userInput: ({ event }) => event.text,
-            history: ({ context, event }) => [
-              ...context.history,
-              { role: 'user' as const, content: event.text },
-            ],
           }),
         },
       },
@@ -70,46 +62,37 @@ export const adaptiveConversationMachine = createMachine({
             input,
           }: {
             input: {
-              task: TaskSchema;
-              quest: QuestSchema;
-              history: ConversationMessage[];
+              step: MotivationStep;
               userInput: string;
+              formData: Partial<MotivationFormData>;
             };
-          }): Promise<TurnAnalysis> => {
-            return await DeepSeekService.processTurn(
-              input.task,
-              input.quest,
-              input.history,
-              input.userInput
+          }): Promise<MotivationTurnResult> => {
+            return await DeepSeekService.processMotivationStep(
+              input.step,
+              input.userInput,
+              input.formData
             );
           }
         ),
         input: ({ context }) => ({
-          task: context.currentTask,
-          quest: context.currentQuest,
-          history: context.history,
+          step: context.currentStep,
           userInput: context.userInput,
+          formData: context.formData,
         }),
         onDone: {
           target: 'speakingFeedback',
           actions: assign({
             atlasResponse: ({ event }) => event.output.atlasSpokenResponse,
-            isTaskComplete: ({ event }) => event.output.isTaskComplete,
-            collectedAnswers: ({ context, event }) => ({
-              ...context.collectedAnswers,
-              ...event.output.extractedFields,
+            formData: ({ context, event }) => ({
+              ...context.formData,
+              [event.output.extractedValue.key]: event.output.extractedValue.value,
             }),
-            history: ({ context, event }) => [
-              ...context.history,
-              { role: 'assistant' as const, content: event.output.atlasSpokenResponse },
-            ],
           }),
         },
         onError: {
           target: 'speakingFeedback',
           actions: assign({
-            atlasResponse: "Got it. Let's move to the next step.",
-            isTaskComplete: () => true,
+            atlasResponse: "I've recorded that. Let's move to the next question.",
           }),
         },
       },
@@ -118,61 +101,51 @@ export const adaptiveConversationMachine = createMachine({
       on: {
         SPEECH_FINISHED: [
           {
-            // Task needs follow-up -> back to listening
-            guard: ({ context }) => !context.isTaskComplete,
-            target: 'listening',
+            guard: ({ context }) => context.currentStep === 'push',
+            target: 'speakingPrompt',
+            actions: assign({
+              currentStep: 'pull',
+              stepIndex: 1,
+              atlasResponse: STEP_PROMPTS.pull,
+            }),
           },
           {
-            // Task is complete, more tasks remain in quest
-            guard: ({ context }) => playbookAdapter.getTask(context.taskIndex + 1) !== null,
+            guard: ({ context }) => context.currentStep === 'pull',
+            target: 'speakingPrompt',
+            actions: assign({
+              currentStep: 'urgency',
+              stepIndex: 2,
+              atlasResponse: STEP_PROMPTS.urgency,
+            }),
+          },
+          {
+            guard: ({ context }) => context.currentStep === 'urgency',
+            target: 'speakingPrompt',
+            actions: assign({
+              currentStep: 'why_statement',
+              stepIndex: 3,
+              atlasResponse: STEP_PROMPTS.why_statement,
+            }),
+          },
+          {
             target: 'taskCompleted',
-          },
-          {
-            // All tasks in quest complete
-            target: 'questCompleted',
-            actions: assign(({ context }) => ({
-              atlasResponse: context.currentQuest.success_message,
-            })),
           },
         ],
       },
     },
     taskCompleted: {
-      on: {
-        NEXT_TASK: {
-          target: 'speakingPrompt',
-          actions: assign(({ context }) => {
-            const nextData = playbookAdapter.getTask(context.taskIndex + 1)!;
-            return {
-              taskIndex: context.taskIndex + 1,
-              currentTask: nextData.task,
-              atlasResponse: nextData.task.briefing_text,
-              history: [],
-              isTaskComplete: false,
-            };
-          }),
-        },
-      },
-    },
-    questCompleted: {
       type: 'final',
     },
   },
   on: {
     RESET: {
       target: '.idle',
-      actions: assign(() => {
-        const resetData = playbookAdapter.getTask(0)!;
-        return {
-          taskIndex: 0,
-          currentQuest: resetData.quest,
-          currentTask: resetData.task,
-          history: [],
-          userInput: '',
-          atlasResponse: resetData.task.briefing_text,
-          collectedAnswers: {},
-          isTaskComplete: false,
-        };
+      actions: assign({
+        currentStep: 'push',
+        stepIndex: 0,
+        userInput: '',
+        atlasResponse: STEP_PROMPTS.push,
+        formData: {},
       }),
     },
   },

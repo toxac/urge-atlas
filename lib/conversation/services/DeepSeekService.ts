@@ -1,57 +1,96 @@
 import axios from 'axios';
-import { QuestSchema, TaskSchema } from '../../../types/playbook';
 
 const DEEPSEEK_API_KEY = process.env.EXPO_PUBLIC_DEEPSEEK_API_KEY;
 const API_URL = 'https://api.deepseek.com/v1/chat/completions';
 
-export interface TurnAnalysis {
-  atlasSpokenResponse: string;
-  extractedFields: Record<string, any>;
-  isTaskComplete: boolean;
+export type MotivationStep = 'push' | 'pull' | 'urgency' | 'why_statement';
+
+export interface MotivationFormData {
+  push: string;
+  push_other?: string;
+  pull: string;
+  pull_other?: string;
+  urgency: string;
+  urgency_other?: string;
+  why_statement: string;
 }
 
-export interface ConversationMessage {
-  role: 'user' | 'assistant';
-  content: string;
+export interface MotivationTurnResult {
+  atlasSpokenResponse: string;
+  extractedValue: { key: string; value: string };
+  isStepValid: boolean;
 }
 
 export const DeepSeekService = {
-  async processTurn(
-    task: TaskSchema,
-    quest: QuestSchema,
-    history: ConversationMessage[],
-    latestInput: string
-  ): Promise<TurnAnalysis> {
+  async processMotivationStep(
+    step: MotivationStep,
+    userInput: string,
+    currentFormData: Partial<MotivationFormData>
+  ): Promise<MotivationTurnResult> {
     if (!DEEPSEEK_API_KEY) {
+      // Fallback if API Key is missing
+      const fallbackMap: Record<MotivationStep, { key: string; val: string; nextSpoken: string }> = {
+        push: { key: 'push', val: 'autonomy', nextSpoken: "Understood. Now, what is the vision or outcome you are running toward?" },
+        pull: { key: 'pull', val: 'wealth', nextSpoken: "Powerful. What makes right now the urgent moment to start?" },
+        urgency: { key: 'urgency', val: 'patience', nextSpoken: "Awesome. Lastly, give me your 1-sentence founder manifesto." },
+        why_statement: { key: 'why_statement', val: userInput, nextSpoken: "Your motivation dossier is locked in!" },
+      };
+
+      const res = fallbackMap[step];
       return {
-        atlasSpokenResponse: `Got it. I've recorded your insight for "${task.title}". Let's keep moving.`,
-        extractedFields: { [task.id]: latestInput },
-        isTaskComplete: true,
+        atlasSpokenResponse: res.nextSpoken,
+        extractedValue: { key: res.key, value: res.val },
+        isStepValid: true,
       };
     }
 
+    const prompts: Record<MotivationStep, string> = {
+      push: `
+You are evaluating Question 1 of MotivationForm: "What are you running from?" (Push Driver).
+Map the user's spoken answer to ONE of these valid form enum values:
+['boss', 'toxic', 'paycheck', 'dead_end', 'potential', 'autonomy', 'other'].
+If 'other', provide a brief custom summary in 'push_other'.
+
+In 'atlasSpokenResponse', validate their push driver in 1 short sentence, then ask: "Now, what is the vision or future you are running toward?"
+`,
+      pull: `
+You are evaluating Question 2 of MotivationForm: "What are you running toward?" (Pull Driver).
+Map the user's spoken answer to ONE of these valid form enum values:
+['wealth', 'meaning', 'time', 'prove', 'legacy', 'community', 'other'].
+If 'other', provide a brief custom summary in 'pull_other'.
+
+In 'atlasSpokenResponse', validate their pull driver in 1 short sentence, then ask: "What makes right now the urgent moment to start?"
+`,
+      urgency: `
+You are evaluating Question 3 of MotivationForm: "Why do you want to start now?" (Urgency Catalyst).
+Map the user's spoken answer to ONE of these valid form enum values:
+['financial_cliff', 'life_change', 'deadline', 'market', 'patience', 'age', 'other'].
+If 'other', provide a brief custom summary in 'urgency_other'.
+
+In 'atlasSpokenResponse', validate their urgency in 1 short sentence, then ask: "Lastly, synthesize this into your 1-sentence founder manifesto. What is your anchor statement?"
+`,
+      why_statement: `
+You are evaluating Question 4 of MotivationForm: "Your one-sentence founder manifesto" (why_statement).
+Format the user's answer into a crisp, powerful 1-sentence manifesto statement.
+
+Current accumulated context:
+Push: ${currentFormData.push}
+Pull: ${currentFormData.pull}
+Urgency: ${currentFormData.urgency}
+
+In 'atlasSpokenResponse', validate their manifesto in 1 short sentence and confirm that their Motivation Dossier is locked in!
+`,
+    };
+
     const systemPrompt = `
-You are Atlas, an empathetic executive founder coach helping a first-time entrepreneur.
+You are Atlas, an executive founder coach guiding an entrepreneur through Task 1: MotivationForm.
+${prompts[step]}
 
-Current Quest: "${quest.title}"
-Current Task: "${task.title}"
-Briefing: "${task.briefing_text}"
-Reflection Prompt: "${task.reflection_prompt}"
-
-INSTRUCTIONS:
-1. Evaluate if the founder gave a genuine, thoughtful response.
-2. If their response is generic or ultra-short (e.g. "to make money" or "idk"), ask ONE sharp, encouraging follow-up to pull out their personal truth. Set "isTaskComplete": false.
-3. If their answer is clear and honest, give a 1-2 sentence validation highlighting their core insight. Set "isTaskComplete": true.
-
-RULES:
-- Maximum 2 spoken sentences.
-- Speak naturally like a supportive mentor, not an AI template.
-
-Respond ONLY in valid JSON:
+Respond STRICTLY in JSON:
 {
-  "atlasSpokenResponse": "Your spoken feedback back to the user",
-  "extractedFields": { "${task.id}": "clean, formatted summary of their answer" },
-  "isTaskComplete": boolean
+  "atlasSpokenResponse": "Spoken feedback back to founder",
+  "extractedValue": { "key": "${step}", "value": "mapped_enum_or_formatted_text" },
+  "isStepValid": true
 }`;
 
     try {
@@ -62,8 +101,7 @@ Respond ONLY in valid JSON:
           response_format: { type: 'json_object' },
           messages: [
             { role: 'system', content: systemPrompt },
-            ...history,
-            { role: 'user', content: latestInput },
+            { role: 'user', content: userInput },
           ],
           temperature: 0.7,
         },
@@ -77,11 +115,11 @@ Respond ONLY in valid JSON:
 
       return JSON.parse(response.data.choices[0].message.content);
     } catch (error) {
-      console.error('DeepSeek Turn Processing Error:', error);
+      console.error('DeepSeek Motivation Extraction Error:', error);
       return {
-        atlasSpokenResponse: "Awesome. I've noted that down. Let's head to the next step.",
-        extractedFields: { [task.id]: latestInput },
-        isTaskComplete: true,
+        atlasSpokenResponse: "Got it! Let's continue.",
+        extractedValue: { key: step, value: userInput },
+        isStepValid: true,
       };
     }
   },
