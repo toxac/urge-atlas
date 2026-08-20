@@ -1,4 +1,4 @@
-// app/conversation/engine/StateMachine.ts
+// lib/conversation/engine/StateMachine.ts
 
 import { DeepSeekService } from '../services/DeepSeekService';
 import { StorageService } from '../services/StorageService';

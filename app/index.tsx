@@ -4,16 +4,16 @@ import * as Speech from 'expo-speech';
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect, useRef, useState } from 'react';
 import {
-    Animated,
-    Dimensions,
-    Easing,
-    KeyboardAvoidingView,
-    Platform,
-    ScrollView,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  Animated,
+  Dimensions,
+  Easing,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StateMachine } from '../lib/conversation/engine/StateMachine';
@@ -21,7 +21,7 @@ import { StorageService } from '../lib/conversation/services/StorageService';
 
 const { width } = Dimensions.get('window');
 const ORB_SIZE = width * 0.5;
-const RING_WIDTH = 6;
+const RING_WIDTH = 4; // thinner ring for a modern look
 
 type Message = {
   id: string;
@@ -43,13 +43,18 @@ export default function App() {
   const [statusSubtext, setStatusSubtext] = useState('');
 
   // --- Animation refs ---
-  const rotationAnim = useRef(new Animated.Value(0)).current;
+  const rotation1 = useRef(new Animated.Value(0)).current;
+  const rotation2 = useRef(new Animated.Value(0)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const glowAnim = useRef(new Animated.Value(0)).current;
 
-  const spin = rotationAnim.interpolate({
+  const spin1 = rotation1.interpolate({
     inputRange: [0, 1],
     outputRange: ['0deg', '360deg'],
+  });
+  const spin2 = rotation2.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['360deg', '0deg'],
   });
 
   // --- Engine refs ---
@@ -60,19 +65,26 @@ export default function App() {
 
   // --- Orb Animation ---
   useEffect(() => {
-    const rotate = Animated.loop(
-      Animated.timing(rotationAnim, {
+    const rotate1 = Animated.loop(
+      Animated.timing(rotation1, {
         toValue: 1,
-        duration: 4000,
+        duration: 5000,
         easing: Easing.linear,
         useNativeDriver: true,
       })
     );
-
+    const rotate2 = Animated.loop(
+      Animated.timing(rotation2, {
+        toValue: 1,
+        duration: 7000,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      })
+    );
     const pulse = Animated.loop(
       Animated.sequence([
         Animated.timing(pulseAnim, {
-          toValue: 1.06,
+          toValue: 1.08,
           duration: 800,
           easing: Easing.inOut(Easing.ease),
           useNativeDriver: true,
@@ -85,7 +97,6 @@ export default function App() {
         }),
       ])
     );
-
     const glow = Animated.loop(
       Animated.sequence([
         Animated.timing(glowAnim, {
@@ -103,20 +114,24 @@ export default function App() {
 
     const isActive = engineState === 'SPEAKING' || engineState === 'LISTENING' || engineState === 'PROCESSING';
     if (isActive) {
-      rotate.start();
+      rotate1.start();
+      rotate2.start();
       pulse.start();
       glow.start();
     } else {
-      rotate.stop();
+      rotate1.stop();
+      rotate2.stop();
       pulse.stop();
       glow.stop();
-      rotationAnim.setValue(0);
+      rotation1.setValue(0);
+      rotation2.setValue(0);
       pulseAnim.setValue(1);
       glowAnim.setValue(0);
     }
 
     return () => {
-      rotate.stop();
+      rotate1.stop();
+      rotate2.stop();
       pulse.stop();
       glow.stop();
     };
@@ -125,14 +140,10 @@ export default function App() {
   // --- Helper: Reset App ---
   const resetApp = async () => {
     console.log('🔄 Resetting app...');
-    // Stop any ongoing speech
     Speech.stop();
-
-    // Clear the session from SQLite
     await StorageService.clearSession('mission1_quest1');
     console.log('🗑️ Session cleared');
 
-    // Reset local state
     setMessages([]);
     setUserInput('');
     setEngineState('IDLE');
@@ -143,11 +154,9 @@ export default function App() {
     listenResolverRef.current = null;
     isProcessingRef.current = false;
 
-    // Recreate the state machine
     const machine = new StateMachine();
     machineRef.current = machine;
 
-    // Re-register callbacks
     machine.onStateChangeListener((state, data) => {
       console.log('🔔 Reset machine state:', state);
       setEngineState(state);
@@ -212,13 +221,12 @@ export default function App() {
       }
     );
 
-    // Start the session fresh
     console.log('🚀 Starting fresh session...');
     await machine.startOrResume();
     console.log('✅ Reset complete');
   };
 
-  // --- Init (no auto‑clear) ---
+  // --- Init ---
   useEffect(() => {
     const init = async () => {
       try {
@@ -398,7 +406,6 @@ export default function App() {
         }}
       >
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          {/* Small reset icon (optional) */}
           <TouchableOpacity
             onPress={resetApp}
             style={{
@@ -412,7 +419,6 @@ export default function App() {
           >
             <Text style={{ color: '#888', fontSize: 18 }}>⟳</Text>
           </TouchableOpacity>
-
           <Text style={{ fontSize: 20, fontWeight: '700', color: '#fff' }}>
             Urge
           </Text>
@@ -457,7 +463,7 @@ export default function App() {
 
       {/* Main Content */}
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
-        {/* Orb */}
+        {/* Custom Orb – with two counter‑rotating rings and a pulsing dot */}
         <TouchableOpacity
           activeOpacity={0.9}
           onPress={toggleTranscript}
@@ -470,21 +476,23 @@ export default function App() {
             justifyContent: 'center',
           }}
         >
+          {/* Glow */}
           <Animated.View
             style={{
               position: 'absolute',
-              width: ORB_SIZE * 1.3,
-              height: ORB_SIZE * 1.3,
-              borderRadius: ORB_SIZE * 0.65,
+              width: ORB_SIZE * 1.4,
+              height: ORB_SIZE * 1.4,
+              borderRadius: ORB_SIZE * 0.7,
               backgroundColor: getOrbColor(),
               opacity: glowAnim.interpolate({
                 inputRange: [0, 1],
-                outputRange: [0.05, 0.15],
+                outputRange: [0.05, 0.2],
               }),
               transform: [{ scale: pulseAnim }],
             }}
           />
 
+          {/* Background track */}
           <View
             style={{
               position: 'absolute',
@@ -496,6 +504,7 @@ export default function App() {
             }}
           />
 
+          {/* Rotating ring 1 (clockwise) */}
           <Animated.View
             style={{
               position: 'absolute',
@@ -507,19 +516,37 @@ export default function App() {
               borderTopColor: 'transparent',
               borderRightColor: 'transparent',
               borderBottomColor: 'transparent',
-              transform: [{ rotate: spin }],
+              transform: [{ rotate: spin1 }],
               opacity: engineState === 'IDLE' ? 0.2 : 1,
             }}
           />
 
+          {/* Rotating ring 2 (counter‑clockwise) */}
           <Animated.View
             style={{
-              width: ORB_SIZE * 0.12,
-              height: ORB_SIZE * 0.12,
-              borderRadius: ORB_SIZE * 0.06,
+              position: 'absolute',
+              width: ORB_SIZE * 0.8,
+              height: ORB_SIZE * 0.8,
+              borderRadius: ORB_SIZE * 0.4,
+              borderWidth: RING_WIDTH * 0.8,
+              borderColor: getOrbColor(),
+              borderLeftColor: 'transparent',
+              borderBottomColor: 'transparent',
+              borderRightColor: 'transparent',
+              transform: [{ rotate: spin2 }],
+              opacity: engineState === 'IDLE' ? 0.15 : 0.8,
+            }}
+          />
+
+          {/* Pulsing inner dot */}
+          <Animated.View
+            style={{
+              width: ORB_SIZE * 0.1,
+              height: ORB_SIZE * 0.1,
+              borderRadius: ORB_SIZE * 0.05,
               backgroundColor: getOrbColor(),
               opacity: pulseAnim.interpolate({
-                inputRange: [1, 1.06],
+                inputRange: [1, 1.08],
                 outputRange: [0.6, 1],
               }),
               transform: [{ scale: pulseAnim }],
@@ -534,34 +561,6 @@ export default function App() {
           <Text style={{ marginTop: 6, fontSize: 14, color: '#666' }}>
             {statusSubtext}
           </Text>
-        )}
-
-        {isListening && (
-          <View style={{ flexDirection: 'row', marginTop: 12, gap: 4 }}>
-            {[0, 1, 2].map((i) => (
-              <Animated.View
-                key={i}
-                style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: 4,
-                  backgroundColor: '#00ff88',
-                  opacity: pulseAnim.interpolate({
-                    inputRange: [1, 1.06],
-                    outputRange: [0.3, 1],
-                  }),
-                  transform: [
-                    {
-                      scale: pulseAnim.interpolate({
-                        inputRange: [1, 1.06],
-                        outputRange: [0.8, 1.2 + i * 0.1],
-                      }),
-                    },
-                  ],
-                }}
-              />
-            ))}
-          </View>
         )}
 
         {isListening && (
@@ -594,7 +593,7 @@ export default function App() {
           <Text style={{ color: '#888', fontSize: 12 }}>Watch intro</Text>
         </TouchableOpacity>
 
-        {/* ✅ NEW: Start Over button (highly visible) */}
+        {/* Start Over button */}
         <TouchableOpacity
           onPress={resetApp}
           style={{

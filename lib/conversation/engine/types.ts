@@ -1,4 +1,4 @@
-// The different states our engine can be in
+// lib/conversation/engine/types.ts
 export type EngineState = 'IDLE' | 'SPEAKING' | 'LISTENING' | 'PROCESSING' | 'SAVING' | 'COMPLETE';
 
 // A single step in the conversation flow
