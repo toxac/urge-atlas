@@ -1,12 +1,10 @@
 // lib/conversation/services/StorageService.ts
 import * as SQLite from 'expo-sqlite';
-import { SessionState } from '../engine/types';
+import type { SessionState } from '../engine/types';
 
-// Open the database
 const db = SQLite.openDatabaseSync('atlas.db');
 
 export const StorageService = {
-  // Initialize tables
   async init() {
     await db.execAsync(`
       CREATE TABLE IF NOT EXISTS sessions (
@@ -30,7 +28,6 @@ export const StorageService = {
     console.log('📦 SQLite initialized');
   },
 
-  // Save or update the current session state
   async saveSession(state: SessionState) {
     const { sessionId, currentTaskId, currentNodeIndex, taskData, completedTasks, updatedAt } = state;
     await db.runAsync(
@@ -44,10 +41,8 @@ export const StorageService = {
       JSON.stringify(completedTasks),
       updatedAt
     );
-    console.log('💾 Session saved');
   },
 
-  // Load the session state
   async loadSession(sessionId: string): Promise<SessionState | null> {
     const result = await db.getFirstAsync<{
       session_id: string;
@@ -56,11 +51,10 @@ export const StorageService = {
       task_data: string;
       completed_tasks: string;
       updated_at: string;
-    }>(
-      `SELECT * FROM sessions WHERE session_id = ?`,
-      sessionId
-    );
+    }>(`SELECT * FROM sessions WHERE session_id = ?`, sessionId);
+
     if (!result) return null;
+
     return {
       sessionId: result.session_id,
       currentTaskId: result.current_task_id,
@@ -71,7 +65,6 @@ export const StorageService = {
     };
   },
 
-  // Append a transcript
   async saveTranscript(taskId: string, nodeId: string, transcript: string, fieldName: string) {
     await db.runAsync(
       `INSERT INTO transcripts (task_id, node_id, transcript, field_name, created_at)
@@ -82,15 +75,9 @@ export const StorageService = {
       fieldName,
       new Date().toISOString()
     );
-    console.log('📝 Transcript saved');
   },
+
   async clearSession(sessionId: string) {
-    await db.runAsync(
-      `DELETE FROM sessions WHERE session_id = ?`,
-      sessionId
-    );
-    console.log(`🗑️ Session ${sessionId} cleared`);
+    await db.runAsync(`DELETE FROM sessions WHERE session_id = ?`, sessionId);
   },
 };
-
-// Add this method to StorageService

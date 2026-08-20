@@ -4,7 +4,7 @@ I am developing an POC app for first time entrepreneurs. The app is a voice vers
 - App have to follow the logical and structural approach of the program planned in webapp.
 - program is structured as playbook which defines each mission -> quest -> task. This app will turn this types form based approach into a conversational one. 
 - Tech considerations
-   - I am using react-navtive expo to build the app
+   - I am using react-native expo to build the app
    - I want to use on-device text-to-speech and speech-to-text on both android and Ios
    - Only if native stt and tts does not deliver quality result i want to switch to small on device models
 - Current Flow:
@@ -15,8 +15,10 @@ I am developing an POC app for first time entrepreneurs. The app is a voice vers
       3. Converts users voice response into text based on the original form schema
       4. Confirms user response and respond back with more insight (ai/deepseek api) and saves the data.
       5. I also want to provide text input/editing fallback 
-- Current Issues:
-   1. the content seems very robotic and bot does nbot seem to add any values from llm
+## Current Issues:
+   1. the content seems very robotic and bot does not seem to add any values from llm
+   2. Conversations seem very broken and it changes responses completely after typing. 
+   3. STT has not been implemented, i want to set everything up first and test out with expo go and then implement STT to have a build using expo and install a test on device. I guess i cant use STT using expo go
    2. the bot animation is not good. does not seem to track the state (bot speaking, user speaking, listening, processing, AI Call, saving)
    3. the taskflow needs to be drastically made more exciting
    4. We can use something like x-state for better responsive state 
