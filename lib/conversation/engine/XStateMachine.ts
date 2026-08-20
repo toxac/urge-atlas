@@ -1,37 +1,44 @@
 import { assign, createMachine, fromPromise } from 'xstate';
+import { QuestSchema, TaskSchema } from '../../../types/playbook';
 import { ConversationMessage, DeepSeekService, TurnAnalysis } from '../services/DeepSeekService';
-import { StorageService } from '../services/StorageService';
-import { task1_1_WhyStart, TaskDefinition } from './taskFlows';
+import { playbookAdapter } from './PlaybookAdapter';
 
-export interface AdaptiveContext {
-  task: TaskDefinition;
+export interface PlaybookContext {
+  taskIndex: number;
+  currentQuest: QuestSchema;
+  currentTask: TaskSchema;
   history: ConversationMessage[];
   userInput: string;
   atlasResponse: string;
-  accumulatedData: Record<string, any>;
-  turnCount: number;
+  collectedAnswers: Record<string, any>;
+  isTaskComplete: boolean;
 }
 
-export type AdaptiveEvent =
+export type PlaybookEvent =
   | { type: 'START' }
   | { type: 'SPEECH_FINISHED' }
   | { type: 'SUBMIT_INPUT'; text: string }
+  | { type: 'NEXT_TASK' }
   | { type: 'RESET' };
 
+const firstTaskData = playbookAdapter.getTask(0)!;
+
 export const adaptiveConversationMachine = createMachine({
-  id: 'adaptiveConversation',
+  id: 'quest1Demo',
   initial: 'idle',
   types: {} as {
-    context: AdaptiveContext;
-    events: AdaptiveEvent;
+    context: PlaybookContext;
+    events: PlaybookEvent;
   },
   context: {
-    task: task1_1_WhyStart,
+    taskIndex: 0,
+    currentQuest: firstTaskData.quest,
+    currentTask: firstTaskData.task,
     history: [],
     userInput: '',
-    atlasResponse: task1_1_WhyStart.initialPrompt,
-    accumulatedData: {},
-    turnCount: 0,
+    atlasResponse: firstTaskData.task.briefing_text,
+    collectedAnswers: {},
+    isTaskComplete: false,
   },
   states: {
     idle: {
@@ -63,96 +70,110 @@ export const adaptiveConversationMachine = createMachine({
             input,
           }: {
             input: {
-              task: TaskDefinition;
+              task: TaskSchema;
+              quest: QuestSchema;
               history: ConversationMessage[];
               userInput: string;
             };
           }): Promise<TurnAnalysis> => {
             return await DeepSeekService.processTurn(
               input.task,
+              input.quest,
               input.history,
               input.userInput
             );
           }
         ),
         input: ({ context }) => ({
-          task: context.task,
+          task: context.currentTask,
+          quest: context.currentQuest,
           history: context.history,
           userInput: context.userInput,
         }),
-        onDone: [
-          {
-            // Branch 1: Task Complete -> Save and finish
-            guard: ({ event }) => event.output.isTaskComplete,
-            target: 'savingAndCompleting',
-            actions: assign({
-              atlasResponse: ({ event }) => event.output.atlasSpokenResponse,
-              accumulatedData: ({ context, event }) => ({
-                ...context.accumulatedData,
-                ...event.output.extractedFields,
-              }),
-              history: ({ context, event }) => [
-                ...context.history,
-                { role: 'assistant' as const, content: event.output.atlasSpokenResponse },
-              ],
-            }),
-          },
-          {
-            // Branch 2: Needs deeper probing or answering question -> Loop back
-            target: 'speakingPrompt',
-            actions: assign({
-              atlasResponse: ({ event }) => event.output.atlasSpokenResponse,
-              accumulatedData: ({ context, event }) => ({
-                ...context.accumulatedData,
-                ...event.output.extractedFields,
-              }),
-              history: ({ context, event }) => [
-                ...context.history,
-                { role: 'assistant' as const, content: event.output.atlasSpokenResponse },
-              ],
-              turnCount: ({ context }) => context.turnCount + 1,
-            }),
-          },
-        ],
-        onError: {
-          target: 'speakingPrompt',
+        onDone: {
+          target: 'speakingFeedback',
           actions: assign({
-            atlasResponse: "Let's capture what you just said and move forward.",
+            atlasResponse: ({ event }) => event.output.atlasSpokenResponse,
+            isTaskComplete: ({ event }) => event.output.isTaskComplete,
+            collectedAnswers: ({ context, event }) => ({
+              ...context.collectedAnswers,
+              ...event.output.extractedFields,
+            }),
+            history: ({ context, event }) => [
+              ...context.history,
+              { role: 'assistant' as const, content: event.output.atlasSpokenResponse },
+            ],
+          }),
+        },
+        onError: {
+          target: 'speakingFeedback',
+          actions: assign({
+            atlasResponse: "Got it. Let's move to the next step.",
+            isTaskComplete: () => true,
           }),
         },
       },
     },
-    savingAndCompleting: {
-      invoke: {
-        src: fromPromise(
-          async ({
-            input,
-          }: {
-            input: { taskId: string; data: Record<string, any> };
-          }) => {
-            await StorageService.saveSession({
-              sessionId: 'mission1_quest1',
-              currentTaskId: input.taskId,
-              currentNodeIndex: 99,
-              taskData: input.data,
-              completedTasks: [input.taskId],
-              updatedAt: new Date().toISOString(),
-            });
-          }
-        ),
-        input: ({ context }) => ({
-          taskId: context.task.id,
-          data: context.accumulatedData,
-        }),
-        onDone: 'completed',
-        onError: 'completed',
+    speakingFeedback: {
+      on: {
+        SPEECH_FINISHED: [
+          {
+            // Task needs follow-up -> back to listening
+            guard: ({ context }) => !context.isTaskComplete,
+            target: 'listening',
+          },
+          {
+            // Task is complete, more tasks remain in quest
+            guard: ({ context }) => playbookAdapter.getTask(context.taskIndex + 1) !== null,
+            target: 'taskCompleted',
+          },
+          {
+            // All tasks in quest complete
+            target: 'questCompleted',
+            actions: assign(({ context }) => ({
+              atlasResponse: context.currentQuest.success_message,
+            })),
+          },
+        ],
       },
     },
-    completed: {
+    taskCompleted: {
+      on: {
+        NEXT_TASK: {
+          target: 'speakingPrompt',
+          actions: assign(({ context }) => {
+            const nextData = playbookAdapter.getTask(context.taskIndex + 1)!;
+            return {
+              taskIndex: context.taskIndex + 1,
+              currentTask: nextData.task,
+              atlasResponse: nextData.task.briefing_text,
+              history: [],
+              isTaskComplete: false,
+            };
+          }),
+        },
+      },
+    },
+    questCompleted: {
       type: 'final',
     },
   },
   on: {
-    RESET: 'idle',
+    RESET: {
+      target: '.idle',
+      actions: assign(() => {
+        const resetData = playbookAdapter.getTask(0)!;
+        return {
+          taskIndex: 0,
+          currentQuest: resetData.quest,
+          currentTask: resetData.task,
+          history: [],
+          userInput: '',
+          atlasResponse: resetData.task.briefing_text,
+          collectedAnswers: {},
+          isTaskComplete: false,
+        };
+      }),
+    },
   },
 });

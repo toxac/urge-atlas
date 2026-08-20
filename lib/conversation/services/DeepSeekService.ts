@@ -1,14 +1,13 @@
 import axios from 'axios';
-import { TaskDefinition } from '../engine/taskFlows';
+import { QuestSchema, TaskSchema } from '../../../types/playbook';
 
 const DEEPSEEK_API_KEY = process.env.EXPO_PUBLIC_DEEPSEEK_API_KEY;
 const API_URL = 'https://api.deepseek.com/v1/chat/completions';
 
 export interface TurnAnalysis {
   atlasSpokenResponse: string;
-  extractedFields: Record<string, string>;
+  extractedFields: Record<string, any>;
   isTaskComplete: boolean;
-  action: 'PROBE' | 'ADVANCE' | 'ANSWER_AND_STEER';
 }
 
 export interface ConversationMessage {
@@ -18,46 +17,42 @@ export interface ConversationMessage {
 
 export const DeepSeekService = {
   async processTurn(
-    task: TaskDefinition,
-    conversationHistory: ConversationMessage[],
+    task: TaskSchema,
+    quest: QuestSchema,
+    history: ConversationMessage[],
     latestInput: string
   ): Promise<TurnAnalysis> {
     if (!DEEPSEEK_API_KEY) {
       return {
-        atlasSpokenResponse: `Got it. You're driven by "${latestInput}". Let's lock that in.`,
-        extractedFields: { core_driver: latestInput },
+        atlasSpokenResponse: `Got it. I've recorded your insight for "${task.title}". Let's keep moving.`,
+        extractedFields: { [task.id]: latestInput },
         isTaskComplete: true,
-        action: 'ADVANCE',
       };
     }
 
     const systemPrompt = `
-You are Atlas, an elite, empathetic founder co-pilot.
-Current Task: "${task.title}" (${task.missionName})
-Goal Description: ${task.schemaGoal.description}
-Target Fields Needed: ${task.schemaGoal.targetFields.join(', ')}
-Coaching Guidance: ${task.coachingGuidance}
+You are Atlas, an empathetic executive founder coach helping a first-time entrepreneur.
 
-Instructions:
-1. Analyze the user's latest spoken input in the context of the conversation history.
-2. Determine if the user gave a deep, specific answer that satisfies the target fields.
-   - If shallow/vague: Set action to "PROBE". Give a warm, sharp 1-2 sentence follow-up that gets them to go deeper.
-   - If complete: Set action to "ADVANCE". Validate their vision with high-value insight (1-2 sentences), extract the structured data, and set isTaskComplete to true.
-   - If user asked a side question: Set action to "ANSWER_AND_STEER". Answer concisely, then steer back to the task.
+Current Quest: "${quest.title}"
+Current Task: "${task.title}"
+Briefing: "${task.briefing_text}"
+Reflection Prompt: "${task.reflection_prompt}"
 
-Respond ONLY in valid JSON matching this interface:
+INSTRUCTIONS:
+1. Evaluate if the founder gave a genuine, thoughtful response.
+2. If their response is generic or ultra-short (e.g. "to make money" or "idk"), ask ONE sharp, encouraging follow-up to pull out their personal truth. Set "isTaskComplete": false.
+3. If their answer is clear and honest, give a 1-2 sentence validation highlighting their core insight. Set "isTaskComplete": true.
+
+RULES:
+- Maximum 2 spoken sentences.
+- Speak naturally like a supportive mentor, not an AI template.
+
+Respond ONLY in valid JSON:
 {
-  "atlasSpokenResponse": "Spoken text back to user",
-  "extractedFields": { "field_name": "extracted concise summary" },
-  "isTaskComplete": boolean,
-  "action": "PROBE" | "ADVANCE" | "ANSWER_AND_STEER"
+  "atlasSpokenResponse": "Your spoken feedback back to the user",
+  "extractedFields": { "${task.id}": "clean, formatted summary of their answer" },
+  "isTaskComplete": boolean
 }`;
-
-    const messages = [
-      { role: 'system', content: systemPrompt },
-      ...conversationHistory,
-      { role: 'user', content: latestInput },
-    ];
 
     try {
       const response = await axios.post(
@@ -65,7 +60,11 @@ Respond ONLY in valid JSON matching this interface:
         {
           model: 'deepseek-chat',
           response_format: { type: 'json_object' },
-          messages,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            ...history,
+            { role: 'user', content: latestInput },
+          ],
           temperature: 0.7,
         },
         {
@@ -80,10 +79,9 @@ Respond ONLY in valid JSON matching this interface:
     } catch (error) {
       console.error('DeepSeek Turn Processing Error:', error);
       return {
-        atlasSpokenResponse: "That's a solid start. Let's capture that momentum and move to the next step.",
-        extractedFields: { core_driver: latestInput },
+        atlasSpokenResponse: "Awesome. I've noted that down. Let's head to the next step.",
+        extractedFields: { [task.id]: latestInput },
         isTaskComplete: true,
-        action: 'ADVANCE',
       };
     }
   },

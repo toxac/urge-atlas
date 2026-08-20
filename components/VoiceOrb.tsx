@@ -1,109 +1,182 @@
-import React, { useEffect } from 'react';
-import { StyleSheet, View } from 'react-native';
-import Animated, {
-    Easing,
-    interpolateColor,
-    useAnimatedStyle,
-    useSharedValue,
-    withRepeat,
-    withSequence,
-    withTiming,
-} from 'react-native-reanimated';
+import React, { useEffect, useRef } from 'react';
+import { Animated, Easing, StyleSheet, View } from 'react-native';
 
 interface VoiceOrbProps {
   state: 'idle' | 'explainingTask' | 'listening' | 'evaluatingInput' | 'speakingFeedback';
   size?: number;
 }
 
-export const VoiceOrb: React.FC<VoiceOrbProps> = ({ state, size = 200 }) => {
-  const scale = useSharedValue(1);
-  const pulse = useSharedValue(0);
-  const colorProgress = useSharedValue(0);
+export const VoiceOrb: React.FC<VoiceOrbProps> = ({ state, size = 180 }) => {
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+  const pulseAnim = useRef(new Animated.Value(0.2)).current;
 
   useEffect(() => {
+    let scaleLoop: Animated.CompositeAnimation | null = null;
+    let pulseLoop: Animated.CompositeAnimation | null = null;
+
+    if (state === 'speakingFeedback' || state === 'explainingTask') {
+      // Breathing rhythm when Atlas speaks
+      scaleLoop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(scaleAnim, {
+            toValue: 1.15,
+            duration: 600,
+            easing: Easing.inOut(Easing.ease),
+            useNativeDriver: true,
+          }),
+          Animated.timing(scaleAnim, {
+            toValue: 0.95,
+            duration: 600,
+            easing: Easing.inOut(Easing.ease),
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      pulseLoop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 0.45,
+            duration: 600,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 0.15,
+            duration: 600,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      scaleLoop.start();
+      pulseLoop.start();
+    } else if (state === 'listening') {
+      // Pulse when user is speaking
+      scaleLoop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(scaleAnim, {
+            toValue: 1.25,
+            duration: 350,
+            easing: Easing.inOut(Easing.ease),
+            useNativeDriver: true,
+          }),
+          Animated.timing(scaleAnim, {
+            toValue: 1.0,
+            duration: 350,
+            easing: Easing.inOut(Easing.ease),
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      pulseLoop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 0.5,
+            duration: 350,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 0.2,
+            duration: 350,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      scaleLoop.start();
+      pulseLoop.start();
+    } else if (state === 'evaluatingInput') {
+      // Rapid vibration when AI is thinking
+      scaleLoop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(scaleAnim, {
+            toValue: 1.08,
+            duration: 250,
+            useNativeDriver: true,
+          }),
+          Animated.timing(scaleAnim, {
+            toValue: 0.98,
+            duration: 250,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      pulseLoop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 0.4,
+            duration: 250,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 0.2,
+            duration: 250,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      scaleLoop.start();
+      pulseLoop.start();
+    } else {
+      // Idle static state
+      Animated.timing(scaleAnim, {
+        toValue: 1,
+        duration: 300,
+        useNativeDriver: true,
+      }).start();
+      Animated.timing(pulseAnim, {
+        toValue: 0.15,
+        duration: 300,
+        useNativeDriver: true,
+      }).start();
+    }
+
+    return () => {
+      scaleLoop?.stop();
+      pulseLoop?.stop();
+    };
+  }, [state]);
+
+  const getOrbColor = () => {
     switch (state) {
       case 'speakingFeedback':
       case 'explainingTask':
-        colorProgress.value = withTiming(0, { duration: 500 }); // Blue/Cyan
-        scale.value = withRepeat(
-          withSequence(
-            withTiming(1.15, { duration: 600, easing: Easing.inOut(Easing.ease) }),
-            withTiming(0.95, { duration: 600, easing: Easing.inOut(Easing.ease) })
-          ),
-          -1,
-          true
-        );
-        break;
-
+        return '#0066FF'; // Vibrant Blue
       case 'listening':
-        colorProgress.value = withTiming(1, { duration: 500 }); // Neon Emerald
-        scale.value = withRepeat(
-          withSequence(
-            withTiming(1.25, { duration: 400 }),
-            withTiming(1.0, { duration: 400 })
-          ),
-          -1,
-          true
-        );
-        break;
-
+        return '#00FF88'; // Neon Emerald
       case 'evaluatingInput':
-        colorProgress.value = withTiming(2, { duration: 500 }); // Amber/Gold
-        scale.value = withRepeat(
-          withTiming(1.05, { duration: 300 }),
-          -1,
-          true
-        );
-        break;
-
-      case 'idle':
+        return '#FFB700'; // Warm Amber
       default:
-        colorProgress.value = withTiming(3, { duration: 500 }); // Dark Grey/Subtle Accent
-        scale.value = withTiming(1, { duration: 500 });
-        break;
+        return '#333333'; // Dark Gray
     }
-  }, [state]);
+  };
 
-  const animatedOrbStyle = useAnimatedStyle(() => {
-    const backgroundColor = interpolateColor(
-      colorProgress.value,
-      [0, 1, 2, 3],
-      ['#0066FF', '#00FF88', '#FFB700', '#222222']
-    );
-
-    return {
-      transform: [{ scale: scale.value }],
-      backgroundColor,
-    };
-  });
-
-  const animatedGlowStyle = useAnimatedStyle(() => {
-    const backgroundColor = interpolateColor(
-      colorProgress.value,
-      [0, 1, 2, 3],
-      ['rgba(0,102,255,0.3)', 'rgba(0,255,136,0.3)', 'rgba(255,183,0,0.3)', 'rgba(255,255,255,0.05)']
-    );
-
-    return {
-      transform: [{ scale: scale.value * 1.35 }],
-      backgroundColor,
-    };
-  });
+  const orbColor = getOrbColor();
 
   return (
-    <View style={[styles.container, { width: size, height: size }]}>
+    <View style={[styles.container, { width: size * 1.4, height: size * 1.4 }]}>
+      {/* Outer Ambient Glow */}
       <Animated.View
         style={[
           styles.glow,
-          { width: size, height: size, borderRadius: size / 2 },
-          animatedGlowStyle,
+          {
+            width: size * 1.35,
+            height: size * 1.35,
+            borderRadius: (size * 1.35) / 2,
+            backgroundColor: orbColor,
+            opacity: pulseAnim,
+            transform: [{ scale: scaleAnim }],
+          },
         ]}
       />
+      {/* Inner Core Orb */}
       <Animated.View
         style={[
           styles.orb,
-          { width: size, height: size, borderRadius: size / 2 },
-          animatedOrbStyle,
+          {
+            width: size,
+            height: size,
+            borderRadius: size / 2,
+            backgroundColor: orbColor,
+            transform: [{ scale: scaleAnim }],
+          },
         ]}
       />
     </View>
@@ -119,10 +192,10 @@ const styles = StyleSheet.create({
     position: 'absolute',
   },
   orb: {
+    elevation: 12,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.5,
     shadowRadius: 20,
-    elevation: 10,
   },
 });
