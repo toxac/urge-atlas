@@ -7,7 +7,7 @@
     "icon": "./assets/images/icon.png",
     "scheme": "urgemobile",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
@@ -27,7 +27,8 @@
       "permissions": [
         "RECORD_AUDIO",
         "android.permission.RECORD_AUDIO"
-      ]
+      ],
+      "package": "com.t0xac.urgemobile"
     },
     "web": {
       "output": "static",
